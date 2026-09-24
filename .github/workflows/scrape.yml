@@ -1,9 +1,9 @@
 name: Hourly UTD Parking Scraper
 
 on:
-  schedule:
-    - cron: '0 * * * *' # Runs at minute 0 of every hour
-  workflow_dispatch: # Allows you to run it manually from the website
+  repository_dispatch:
+    types: [hourly-scrape]
+  workflow_dispatch:
 
 jobs:
   scrape:

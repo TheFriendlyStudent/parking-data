@@ -28,7 +28,8 @@ class ParkingDashboard:
         self.current_garage = 'PS3'
         self.current_view_type = 'Trend'
         self.tooltip_lookup = {}  
-        self.last_hovered_idx = None  # Cache to prevent redundant redraw lag
+        self.last_hovered_idx = None  
+        self.ui_axes = [] 
         
         self.unique_levels = sorted(self.df['Level'].unique())
         self.unique_options = sorted(self.df['Option'].unique())
@@ -47,7 +48,31 @@ class ParkingDashboard:
         self.fig.canvas.mpl_connect("motion_notify_event", self.hover)
         
         self.setup_ui_elements()
+        self.hook_savefig() 
         self.plot_garage_trend('PS3')
+
+    def hook_savefig(self):
+        """Intercepts fig.savefig to hide UI elements and tooltips before writing to disk."""
+        original_savefig = self.fig.savefig
+        
+        def custom_savefig(*args, **kwargs):
+            ui_states = {ax: ax.get_visible() for ax in self.ui_axes}
+            annot_state = self.annot.get_visible() if self.annot else False
+            
+            for ax in self.ui_axes:
+                ax.set_visible(False)
+            if self.annot:
+                self.annot.set_visible(False)
+                
+            try:
+                original_savefig(*args, **kwargs)
+            finally:
+                for ax, state in ui_states.items():
+                    ax.set_visible(state)
+                if self.annot:
+                    self.annot.set_visible(annot_state)
+                    
+        self.fig.savefig = custom_savefig
 
     def setup_ui_elements(self):
         """Creates the interactive UI buttons in a single row and sidebar checkboxes."""
@@ -57,7 +82,7 @@ class ParkingDashboard:
         ax_btn_lvl_ps3 = plt.axes([0.19, 0.92, 0.12, 0.05])
         ax_btn_pmt_ps3 = plt.axes([0.33, 0.92, 0.12, 0.05])
         
-        # PS4 Group (with slight visual gap)
+        # PS4 Group
         ax_btn_ps4 = plt.axes([0.52, 0.92, 0.12, 0.05])
         ax_btn_lvl_ps4 = plt.axes([0.66, 0.92, 0.12, 0.05])
         ax_btn_pmt_ps4 = plt.axes([0.80, 0.92, 0.12, 0.05])
@@ -105,6 +130,13 @@ class ParkingDashboard:
         self.chk_levels.on_clicked(self.on_filter_changed)
         self.chk_options.on_clicked(self.on_filter_changed)
         self.chk_trends.on_clicked(self.on_filter_changed)
+        
+        # Store all created UI axes for the save hook
+        self.ui_axes = [
+            ax_btn_ps3, ax_btn_lvl_ps3, ax_btn_pmt_ps3,
+            ax_btn_ps4, ax_btn_lvl_ps4, ax_btn_pmt_ps4,
+            self.ax_chk_levels, self.ax_chk_options, self.ax_chk_trends
+        ]
 
     def on_filter_changed(self, label):
         if self.current_view_type == 'Trend':
@@ -120,7 +152,7 @@ class ParkingDashboard:
         self.ax.clear()
         self.current_garage = garage_name
         self.current_view_type = 'Trend'
-        self.last_hovered_idx = None # Reset cache on redraw
+        self.last_hovered_idx = None 
         
         self.ax_chk_levels.set_visible(True)
         self.ax_chk_options.set_visible(True)
@@ -136,8 +168,6 @@ class ParkingDashboard:
         
         self.current_trend_data = garage_df.groupby('Scrape Time')['Available Spaces'].sum().reset_index()
         
-        # PERFORMANCE OPTIMIZATION: Vectorized generation of the tooltip lookup dictionary
-        # O(N) execution via Pandas C-backend rather than slow iterrows() looping
         if not garage_df.empty:
             self.tooltip_lookup = (
                 garage_df.groupby(['Scrape Time', 'Level'])['Available Spaces']
@@ -159,7 +189,21 @@ class ParkingDashboard:
         if not self.current_trend_data.empty:
             if '24h Rolling Avg' in active_trends:
                 rolling_df = self.current_trend_data.set_index('Scrape Time').sort_index()
+                
+                # Compute rolling average globally to preserve accuracy at the edges
                 rolling_series = rolling_df['Available Spaces'].rolling('24h').mean()
+                
+                # Determine bounds for the first and last full days
+                min_time = self.current_trend_data['Scrape Time'].min()
+                max_time = self.current_trend_data['Scrape Time'].max()
+                
+                first_full_day_start = min_time.normalize() + pd.Timedelta(days=1)
+                last_full_day_end = max_time.normalize() - pd.Timedelta(seconds=1)
+                
+                # Slice to hide partial days
+                if first_full_day_start <= last_full_day_end:
+                    rolling_series = rolling_series.loc[first_full_day_start:last_full_day_end]
+                
                 self.ax.plot(
                     rolling_series.index, rolling_series.values, 
                     color='purple', linewidth=2.5, label='24h Rolling Avg', zorder=4
@@ -238,7 +282,7 @@ class ParkingDashboard:
             tick.set_rotation(15)
         plt.draw()
 
-    def update_annot(self, ind):
+    def update_annot(self, ind, event):
         idx = ind["ind"][0]
         hovered_time = self.current_trend_data.iloc[idx]['Scrape Time']
         
@@ -256,6 +300,12 @@ class ParkingDashboard:
         x, y = self.line.get_data()
         self.annot.xy = (x[idx], y[idx])
         self.annot.set_text("\n".join(text_lines))
+        
+        _, fig_height = self.fig.canvas.get_width_height()
+        if event.y > fig_height * 0.70:
+            self.annot.xytext = (20, -110) 
+        else:
+            self.annot.xytext = (20, 20)
 
     def hover(self, event):
         if self.line is None:
@@ -266,12 +316,11 @@ class ParkingDashboard:
             cont, ind = self.line.contains(event)
             if cont:
                 idx = ind["ind"][0]
-                # O(1) Cache check: Skip expensive redraws if resting on the same point
                 if self.last_hovered_idx == idx and vis:
                     return 
                     
                 self.last_hovered_idx = idx
-                self.update_annot(ind)
+                self.update_annot(ind, event)
                 self.annot.set_visible(True)
                 self.fig.canvas.draw_idle()
             else:

@@ -34,6 +34,7 @@ class ParkingDashboard:
         self.unique_levels = sorted(self.df['Level'].unique())
         self.unique_options = sorted(self.df['Option'].unique())
         self.trend_options = ['24h Rolling Avg']
+        self.capacities = {'PS3': 750, 'PS4': 1150}
         
         # Setup Annotation for Hover Tooltips 
         self.annot = self.ax.annotate(
@@ -78,22 +79,26 @@ class ParkingDashboard:
         """Creates the interactive UI buttons in a single row and sidebar checkboxes."""
         # --- TOP BUTTONS (Single Row) ---
         # PS3 Group
-        ax_btn_ps3 = plt.axes([0.05, 0.92, 0.12, 0.05])
-        ax_btn_lvl_ps3 = plt.axes([0.19, 0.92, 0.12, 0.05])
-        ax_btn_pmt_ps3 = plt.axes([0.33, 0.92, 0.12, 0.05])
+        ax_btn_ps3 = plt.axes([0.02, 0.92, 0.09, 0.05])
+        ax_btn_lvl_ps3 = plt.axes([0.12, 0.92, 0.09, 0.05])
+        ax_btn_pmt_ps3 = plt.axes([0.22, 0.92, 0.09, 0.05])
+        ax_btn_hr_ps3 = plt.axes([0.32, 0.92, 0.09, 0.05])
         
         # PS4 Group
-        ax_btn_ps4 = plt.axes([0.52, 0.92, 0.12, 0.05])
-        ax_btn_lvl_ps4 = plt.axes([0.66, 0.92, 0.12, 0.05])
-        ax_btn_pmt_ps4 = plt.axes([0.80, 0.92, 0.12, 0.05])
+        ax_btn_ps4 = plt.axes([0.55, 0.92, 0.09, 0.05])
+        ax_btn_lvl_ps4 = plt.axes([0.65, 0.92, 0.09, 0.05])
+        ax_btn_pmt_ps4 = plt.axes([0.75, 0.92, 0.09, 0.05])
+        ax_btn_hr_ps4 = plt.axes([0.85, 0.92, 0.09, 0.05])
 
         self.btn_ps3 = Button(ax_btn_ps3, 'PS3 Trend')
-        self.btn_lvl_ps3 = Button(ax_btn_lvl_ps3, 'PS3 by Level')
-        self.btn_pmt_ps3 = Button(ax_btn_pmt_ps3, 'PS3 by Permit')
+        self.btn_lvl_ps3 = Button(ax_btn_lvl_ps3, 'PS3 Levels')
+        self.btn_pmt_ps3 = Button(ax_btn_pmt_ps3, 'PS3 Permits')
+        self.btn_hr_ps3 = Button(ax_btn_hr_ps3, 'PS3 Hrly %')
 
         self.btn_ps4 = Button(ax_btn_ps4, 'PS4 Trend')
-        self.btn_lvl_ps4 = Button(ax_btn_lvl_ps4, 'PS4 by Level')
-        self.btn_pmt_ps4 = Button(ax_btn_pmt_ps4, 'PS4 by Permit')
+        self.btn_lvl_ps4 = Button(ax_btn_lvl_ps4, 'PS4 Levels')
+        self.btn_pmt_ps4 = Button(ax_btn_pmt_ps4, 'PS4 Permits')
+        self.btn_hr_ps4 = Button(ax_btn_hr_ps4, 'PS4 Hrly %')
 
         self.btn_ps3.on_clicked(lambda event: self.plot_garage_trend('PS3'))
         self.btn_ps4.on_clicked(lambda event: self.plot_garage_trend('PS4'))
@@ -101,6 +106,8 @@ class ParkingDashboard:
         self.btn_lvl_ps4.on_clicked(lambda event: self.plot_capacity_by_level('PS4'))
         self.btn_pmt_ps3.on_clicked(lambda event: self.plot_capacity_by_permit('PS3'))
         self.btn_pmt_ps4.on_clicked(lambda event: self.plot_capacity_by_permit('PS4'))
+        self.btn_hr_ps3.on_clicked(lambda event: self.plot_hourly_occupancy('PS3'))
+        self.btn_hr_ps4.on_clicked(lambda event: self.plot_hourly_occupancy('PS4'))
 
         # --- SIDEBAR FILTERS (Checkboxes) ---
         self.ax_chk_levels = plt.axes([0.02, 0.55, 0.14, 0.25])
@@ -133,8 +140,8 @@ class ParkingDashboard:
         
         # Store all created UI axes for the save hook
         self.ui_axes = [
-            ax_btn_ps3, ax_btn_lvl_ps3, ax_btn_pmt_ps3,
-            ax_btn_ps4, ax_btn_lvl_ps4, ax_btn_pmt_ps4,
+            ax_btn_ps3, ax_btn_lvl_ps3, ax_btn_pmt_ps3, ax_btn_hr_ps3,
+            ax_btn_ps4, ax_btn_lvl_ps4, ax_btn_pmt_ps4, ax_btn_hr_ps4,
             self.ax_chk_levels, self.ax_chk_options, self.ax_chk_trends
         ]
 
@@ -189,18 +196,13 @@ class ParkingDashboard:
         if not self.current_trend_data.empty:
             if '24h Rolling Avg' in active_trends:
                 rolling_df = self.current_trend_data.set_index('Scrape Time').sort_index()
-                
-                # Compute rolling average globally to preserve accuracy at the edges
                 rolling_series = rolling_df['Available Spaces'].rolling('24h').mean()
                 
-                # Determine bounds for the first and last full days
                 min_time = self.current_trend_data['Scrape Time'].min()
                 max_time = self.current_trend_data['Scrape Time'].max()
-                
                 first_full_day_start = min_time.normalize() + pd.Timedelta(days=1)
                 last_full_day_end = max_time.normalize() - pd.Timedelta(seconds=1)
                 
-                # Slice to hide partial days
                 if first_full_day_start <= last_full_day_end:
                     rolling_series = rolling_series.loc[first_full_day_start:last_full_day_end]
                 
@@ -280,6 +282,55 @@ class ParkingDashboard:
         
         for tick in self.ax.get_xticklabels():
             tick.set_rotation(15)
+        plt.draw()
+
+    def plot_hourly_occupancy(self, garage_name):
+        self.ax.clear()
+        self.line = None 
+        self.current_garage = garage_name
+        self.current_view_type = 'Hourly_Occupancy'
+        
+        # Hide the sidebar filters for aggregated static charts
+        self.ax_chk_levels.set_visible(False)
+        self.ax_chk_options.set_visible(False)
+        self.ax_chk_trends.set_visible(False)
+        
+        garage_df = self.df[self.df['Garage'] == garage_name]
+        trend_data = garage_df.groupby('Scrape Time')['Available Spaces'].sum().reset_index()
+        
+        # Calculate percentage using verified capacities
+        cap = self.capacities.get(garage_name, 1000)
+        trend_data['Occupied %'] = ((cap - trend_data['Available Spaces']) / cap) * 100
+        
+        # Extract time metrics
+        trend_data['Hour'] = trend_data['Scrape Time'].dt.hour
+        trend_data['Weekday'] = trend_data['Scrape Time'].dt.weekday
+        
+        # Filter strictly for Monday (0) through Friday (4)
+        weekdays_df = trend_data[trend_data['Weekday'] < 5]
+        
+        weekday_map = {0: 'Monday', 1: 'Tuesday', 2: 'Wednesday', 3: 'Thursday', 4: 'Friday'}
+        colors = ['tab:blue', 'tab:orange', 'tab:green', 'tab:red', 'tab:purple']
+        
+        for i, (wd_num, wd_name) in enumerate(weekday_map.items()):
+            wd_data = weekdays_df[weekdays_df['Weekday'] == wd_num]
+            if not wd_data.empty:
+                hourly_avg = wd_data.groupby('Hour')['Occupied %'].mean().reset_index()
+                self.ax.plot(
+                    hourly_avg['Hour'], hourly_avg['Occupied %'], 
+                    color=colors[i], linewidth=2, marker='o', markersize=4, label=wd_name
+                )
+            
+        self.ax.set_title(f'Average Hourly Occupied % by Weekday: {garage_name} (Capacity: {cap})', fontsize=14, fontweight='bold')
+        self.ax.set_xlabel('Hour of the Day (0 - 23)', fontsize=12)
+        self.ax.set_ylabel('Occupied Percentage (%)', fontsize=12)
+        
+        self.ax.set_xticks(range(0, 24))
+        self.ax.set_xlim(-0.5, 23.5)
+        self.ax.set_ylim(0, 105) 
+        self.ax.grid(True, linestyle='--', alpha=0.7)
+        self.ax.legend(loc='upper left', bbox_to_anchor=(1.02, 1))
+        
         plt.draw()
 
     def update_annot(self, ind, event):
